@@ -1,0 +1,132 @@
+#!/bin/bash
+
+function usage {
+        echo "Usage: site-add -d domain(without www unless subdomain)"
+        exit 1
+}
+
+function checkusername {
+	DATA=${1:0:15}
+	if id -u $DATA >/dev/null 2>&1; then
+        	local TEMP=$(TEMP:0:12)`</dev/urandom tr -dc A-Za-z0-9 | head -c4`
+		checkusername $TEMP
+	fi
+	USERNAME="$DATA"
+}
+
+# Config
+APACHE_ALL_VHOSTS="/etc/apache2/sites-available"
+DRUPAL_FOLDER_PATH="/var/www/drupal7/sites"
+
+# mysql credentials
+MYSQL_LOGIN="root"
+MYSQL_PASS="password"
+
+# configure email notification
+SERVER_URL="192.168.1.1"
+EMAIL_FROM="FROM:sender@email.com"
+EMAIL_TO="reciever@email.com"
+EMAIL_SUBJECT="$DOMAIN been configure"
+EMAIL_CONTENT="FTP\nProtocol: sftp\nURL:$SERVER_URL\nPort: 21\nLogin: $USERNAME\nPassword: $PWORD_RAND\n\nDATABASE\nURL: http://$SERVER_URL/phpmyadmin\nUsername: $USERNAME\n:Password: $PWORD_RAND\n\nCMS\nURL: http://$DOMAIN/user\nUsername: webmaster\nPassword: $PWORD "
+
+
+DOMAIN=
+while getopts :d: OPTION
+do case $OPTION in
+        d)      DOMAIN="$OPTARG"
+                ;;
+        ?)      usage
+                exit 1
+                ;;
+   esac
+done
+
+# Check we have all args
+if [ -z "$DOMAIN" ]; then
+    usage
+fi
+
+#IFS='.' read -a array <<< "$DOMAIN"
+#TEMP_USERNAME="${array[0]//./}"
+
+# Check and process domain for username
+checkusername ${DOMAIN//./}
+
+# Password for CMS
+PWORD="$(echo "$USERNAME" | sed 's/.*/\u&/')"1234##
+
+# Password for FTP & Phpmyadmin
+PWORD_RAND=`</dev/urandom tr -dc A-Za-z0-9 | head -c8`
+
+# check the domain is valid!
+PATTERN="^(([a-zA-Z]|[a-zA-Z][a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z]|[A-Za-z][A-Za-z0-9\-]*[A-Za-z0-9])$";
+if [[ "$DOMAIN" =~ $PATTERN ]]; then
+	DOMAIN=`echo $DOMAIN | tr '[A-Z]' '[a-z]'`
+
+	if [ -f $APACHE_ALL_VHOSTS/$DOMAIN ]; then
+		echo $DOMAIN "already exists";
+		exit 1
+	else
+		echo "Creating hosting for:" $DOMAIN
+
+	fi
+else
+	echo "invalid domain name"
+	exit 1
+fi
+
+# create user account
+DOCROOT=/home/$DOMAIN
+useradd -g sftponly -d $DOCROOT -s /sbin/nologin -p `openssl passwd -crypt $PWORD_RAND` $USERNAME
+usermod -a -G sftponly $USERNAME
+
+# Backup & Rename if directory already exists
+if [ -d "$DOCROOT" ]; then
+  mv $DOCROOT $DOCROOT_$(date -d "today" +"%Y%m%d%H%M")/
+fi
+mkdir $DOCROOT
+mkdir $DOCROOT/www
+mkdir /backup/drupal7/$DOCROOT
+
+#mkdir $DOCROOT/config
+#mkdir $DOCROOT/logs
+
+chown -R root:root $DOCROOT
+chown -R www-data:www-data /backup/drupal7/$DOCROOT
+#chown $USERNAME:sftponly $DOCROOT/www
+#chown root:www-data $DOCROOT/logs
+#chmod 2775 $DOCROOT/www
+#chmod 2474 $DOCROOT/logs
+
+# Set ACL so that www-data can write without chown
+#setfacl -m g:www-data:rwx $DOCROOT
+
+# create mysql user & database
+MYSQL=`which mysql`
+DB="$USERNAME"_db
+Q1="CREATE DATABASE IF NOT EXISTS $DB;"
+Q2="GRANT ALL ON $DB.* TO $USERNAME@localhost IDENTIFIED BY '$PWORD_RAND';"
+Q3="FLUSH PRIVILEGES;"
+SQL="${Q1}${Q2}${Q3}"
+
+$MYSQL -u$MYSQL_LOGIN -p$MYSQL_PASS -e "$SQL"
+
+HOMEPATH=$DOCROOT/www
+SITEPATH=$DRUPAL_FOLDER_PATH/$DOMAIN
+ln -s $HOMEPATH $SITEPATH
+(cd $SITEPATH && drush si sparky --db-url=mysql://$USERNAME:$PWORD_RAND@127.0.0.1/$DB --account-name=admin --account-pass=$PWORD --account-mail=site@commercecraft.com.my  --site-name="$DOMAIN" --sites-subdir=$DOMAIN -y)
+#reset permission so sftp can use to upload files
+chown -R $USERNAME:sftponly $DOCROOT/www
+chown -R www-data:sftponly $DOCROOT/www/files
+chmod 775 $DOCROOT/www
+#echo cloudfare config to settings.php
+echo -e "if (isset(\$_SERVER['HTTP_CF_CONNECTING_IP'])) {\n \$_SERVER['REMOTE_ADDR'] = \$_SERVER['HTTP_CF_CONNECTING_IP']; \n}" >> $DOCROOT/www/settings.php
+#echo apc config to settings.php
+#echo -e "\$conf['cache_backends'][] = 'sites/all/modules/contrib/apc/drupal_apc_cache.inc';\n\$conf['cache_class_cache'] = 'DrupalAPCCache';\n\$conf['cache_class_cache_bootstrap'] = 'DrupalAPCCache';\n\$conf['page_cache_without_database'] = (variable_get('page_compression') == 1) ? TRUE : FALSE;\n\$conf['page_cache_invoke_hooks'] = FALSE;\n\n\$cookie_domain = '$DOMAIN';\n]" >> $DOCROOT/www/settings.php
+chmod 2777 $HOMEPATH/files
+sed -e "s/{MYHOST}/$DOMAIN/" /root/vhost-template-drupal > $APACHE_ALL_VHOSTS/$DOMAIN
+echo -e $EMAIL_CONTENT | mail -a $EMAIL_FROM -s $EMAIL_SUBJECT $EMAIL_TO
+	
+/usr/sbin/a2ensite $DOMAIN
+/etc/init.d/apache2 restart
+echo "Site successfully added."

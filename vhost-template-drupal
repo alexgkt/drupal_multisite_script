@@ -1,0 +1,20 @@
+<VirtualHost *:80>  
+     ServerAdmin webmaster@{MYHOST}  
+     ServerName {MYHOST}  
+     ServerAlias www.{MYHOST}  
+   
+     # Indexes + Directory Root.  
+     DirectoryIndex index.html index.php  
+     DocumentRoot /var/www/drupal7/  
+
+     <Directory /var/www/drupal7/ >  
+         	Options Indexes FollowSymLinks MultiViews
+		AllowOverride All
+		Order allow,deny
+		allow from all
+     </Directory>  
+   
+     # Logfiles  
+     ErrorLog /var/log/apache2/sites/{MYHOST}_error.log  
+     CustomLog /var/log/apache2/sites/{MYHOST}_access.log combined  
+ </VirtualHost>
